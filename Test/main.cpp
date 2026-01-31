@@ -82,6 +82,8 @@ public:
                       << ", ErrorMsg: " << pRspInfo->ErrorMsg << std::endl;
         } else {
             std::cout << "[成功] 客户端认证成功" << std::endl;
+            // 认证成功后发送登录请求
+            ReqUserLoginInternal();
         }
     }
 
@@ -274,22 +276,11 @@ public:
 
     /// 请求用户登录
     void ReqUserLogin() {
-        CThostFtdcReqUserLoginField req = {0};
-
-        strncpy(req.BrokerID, m_brokerId.c_str(), sizeof(req.BrokerID) - 1);
-        strncpy(req.UserID, m_userId.c_str(), sizeof(req.UserID) - 1);
-        strncpy(req.Password, m_password.c_str(), sizeof(req.Password) - 1);
-
         // 如果有认证信息，先进行认证
         if (!m_appId.empty() && !m_authCode.empty()) {
             ReqAuthenticate();
         } else {
-            int result = m_api->ReqUserLogin(&req, ++m_requestId);
-            if (result == 0) {
-                std::cout << "[请求] 发送登录请求, RequestID: " << m_requestId << std::endl;
-            } else {
-                std::cout << "[错误] 发送登录请求失败, 返回码: " << result << std::endl;
-            }
+            ReqUserLoginInternal();
         }
     }
 
@@ -307,6 +298,21 @@ public:
             std::cout << "[请求] 发送认证请求, RequestID: " << m_requestId << std::endl;
         } else {
             std::cout << "[错误] 发送认证请求失败, 返回码: " << result << std::endl;
+        }
+    }
+
+    /// 内部登录请求（实际发送登录请求）
+    void ReqUserLoginInternal() {
+        CThostFtdcReqUserLoginField req = {0};
+        strncpy(req.BrokerID, m_brokerId.c_str(), sizeof(req.BrokerID) - 1);
+        strncpy(req.UserID, m_userId.c_str(), sizeof(req.UserID) - 1);
+        strncpy(req.Password, m_password.c_str(), sizeof(req.Password) - 1);
+
+        int result = m_api->ReqUserLogin(&req, ++m_requestId);
+        if (result == 0) {
+            std::cout << "[请求] 发送登录请求, RequestID: " << m_requestId << std::endl;
+        } else {
+            std::cout << "[错误] 发送登录请求失败, 返回码: " << result << std::endl;
         }
     }
 
