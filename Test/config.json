@@ -1,0 +1,17 @@
+{
+  "brokerName": "SimNow",
+  "brokerId": "9999",
+  "investorId": "233277",
+  "password": "LuO1XiO#Ng99",
+  "authCode": "0000000000000000",
+  "appId": "simnow_client_test",
+  "server": "7x24",
+  "mdHost": "tcp://182.254.243.31:40011",
+  "tdHost": "tcp://182.254.243.31:40001",
+  "bank": "",
+  "fundPassword": "",
+  "tradePassword": "",
+  "bankPassword": "",
+  "initialBalance": 3000,
+  "isTest": false
+}
