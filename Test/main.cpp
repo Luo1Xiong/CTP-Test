@@ -231,16 +231,146 @@ public:
                 std::cout << "持仓信息:" << std::endl;
                 firstQuery = false;
             }
+            // 打印详细持仓信息
             std::cout << "  合约: " << pInvestorPosition->InstrumentID
                       << " | 方向: " << (pInvestorPosition->PosiDirection == THOST_FTDC_PD_Long ? "多头" : "空头")
-                      << " | 持仓: " << pInvestorPosition->Position << std::endl;
-                      // << " | 可用: " << pInvestorPosition->Available << std::endl;
+                      << " | 昨仓: " << pInvestorPosition->YdPosition
+                      << " | 今仓: " << pInvestorPosition->TodayPosition
+                      << " | 总持仓: " << pInvestorPosition->Position << std::endl;
+
+            // 检查是否是 au2604 合约（只记录持仓大于0的）
+            if (strcmp(pInvestorPosition->InstrumentID, "au2604") == 0) {
+                if (pInvestorPosition->Position > 0) {
+                    // 记录持仓方向（只记录一次）
+                    if (m_au2604Direction == 0) {
+                        m_au2604Direction = pInvestorPosition->PosiDirection;
+                    }
+                    // 累加昨仓和今仓
+                    m_au2604YdPosition += pInvestorPosition->YdPosition;
+                    m_au2604TodayPosition += pInvestorPosition->TodayPosition;
+                }
+                // 记录结算价作为价格参考
+                m_au2604SettlementPrice = pInvestorPosition->SettlementPrice;
+            }
         }
 
         if (bIsLast) {
+            // 打印au2604持仓汇总
+            if (m_au2604YdPosition > 0 || m_au2604TodayPosition > 0) {
+                std::cout << "  [au2604汇总] 方向: " << (m_au2604Direction == THOST_FTDC_PD_Long ? "多头" : "空头")
+                          << ", 昨仓: " << m_au2604YdPosition
+                          << ", 今仓: " << m_au2604TodayPosition
+                          << ", 总计: " << (m_au2604YdPosition + m_au2604TodayPosition) << std::endl;
+            }
             std::cout << "====================================" << std::endl;
-            std::cout << "[状态] 所有查询完成, 登录测试成功!" << std::endl;
-            std::cout << "[状态] 按Ctrl+C退出或等待自动登出..." << std::endl;
+            // 持仓查询完成后，查询行情获取涨跌停价
+            std::cout << "[状态] 查询 au2604 行情..." << std::endl;
+            ReqQryDepthMarketData("au2604");
+        }
+    }
+
+    /// 查询深度行情响应
+    virtual void OnRspQryDepthMarketData(CThostFtdcDepthMarketDataField *pDepthMarketData,
+                                         CThostFtdcRspInfoField *pRspInfo,
+                                         int nRequestID, bool bIsLast) override {
+        if (pRspInfo && pRspInfo->ErrorID != 0) {
+            std::cout << "[错误] 查询行情失败, ErrorID: " << pRspInfo->ErrorID
+                      << ", ErrorMsg: " << pRspInfo->ErrorMsg << std::endl;
+            ExecuteOrder();
+            return;
+        }
+
+        if (pDepthMarketData && strcmp(pDepthMarketData->InstrumentID, "au2604") == 0) {
+            std::cout << "[行情] au2604 - 最新价: " << pDepthMarketData->LastPrice
+                      << ", 买一: " << pDepthMarketData->BidPrice1
+                      << ", 卖一: " << pDepthMarketData->AskPrice1
+                      << ", 涨停价: " << pDepthMarketData->UpperLimitPrice
+                      << ", 跌停价: " << pDepthMarketData->LowerLimitPrice << std::endl;
+
+            // 用买一价买入，卖一价卖出
+            m_au2604SettlementPrice = pDepthMarketData->LastPrice;
+            m_au2604UpperLimit = pDepthMarketData->UpperLimitPrice;
+            m_au2604LowerLimit = pDepthMarketData->LowerLimitPrice;
+        }
+
+        if (bIsLast) {
+            ExecuteOrder();
+        }
+    }
+
+    /// 执行下单操作
+    void ExecuteOrder() {
+        int totalPosition = m_au2604YdPosition + m_au2604TodayPosition;
+
+        if (totalPosition > 0) {
+            std::cout << "[操作] 检测到 au2604 持仓 " << totalPosition << " 手 (昨仓:" << m_au2604YdPosition << ", 今仓:" << m_au2604TodayPosition << "), 执行平仓..." << std::endl;
+
+            // 平仓用跌停价确保成交（多头）或涨停价（空头）
+            double price = (m_au2604Direction == THOST_FTDC_PD_Long)
+                ? ((m_au2604LowerLimit > 0) ? m_au2604LowerLimit : (m_au2604SettlementPrice - 10))
+                : ((m_au2604UpperLimit > 0) ? m_au2604UpperLimit : (m_au2604SettlementPrice + 10));
+
+            // 确定买卖方向
+            char direction = (m_au2604Direction == THOST_FTDC_PD_Long) ? THOST_FTDC_D_Sell : THOST_FTDC_D_Buy;
+
+            // 上期所合约需要区分昨仓和今仓平仓
+            if (m_au2604YdPosition > 0) {
+                std::cout << "[操作] 先平昨仓 " << m_au2604YdPosition << " 手..." << std::endl;
+                ReqOrderInsert("au2604", direction, THOST_FTDC_OF_CloseYesterday, m_au2604YdPosition, price);
+            }
+            if (m_au2604TodayPosition > 0) {
+                std::cout << "[操作] 再平今仓 " << m_au2604TodayPosition << " 手..." << std::endl;
+                ReqOrderInsert("au2604", direction, THOST_FTDC_OF_CloseToday, m_au2604TodayPosition, price);
+            }
+        } else {
+            std::cout << "[操作] 无 au2604 持仓, 执行买多开仓 1 手..." << std::endl;
+            // 开仓用涨停价确保成交
+            double price = (m_au2604UpperLimit > 0) ? m_au2604UpperLimit : (m_au2604SettlementPrice + 10);
+            ReqOrderInsert("au2604", THOST_FTDC_D_Buy, THOST_FTDC_OF_Open, 1, price);
+        }
+    }
+
+    /// 报单插入响应
+    virtual void OnRspOrderInsert(CThostFtdcInputOrderField *pInputOrder,
+                                  CThostFtdcRspInfoField *pRspInfo,
+                                  int nRequestID, bool bIsLast) override {
+        std::cout << "[报单响应] RequestID: " << nRequestID << std::endl;
+        if (pRspInfo && pRspInfo->ErrorID != 0) {
+            std::cout << "[错误] 报单被拒绝, ErrorID: " << pRspInfo->ErrorID
+                      << ", ErrorMsg: " << pRspInfo->ErrorMsg << std::endl;
+        } else {
+            std::cout << "[成功] 报单请求已接收" << std::endl;
+        }
+    }
+
+    /// 报单错误回报
+    virtual void OnErrRtnOrderInsert(CThostFtdcInputOrderField *pInputOrder,
+                                     CThostFtdcRspInfoField *pRspInfo) override {
+        std::cout << "[报单错误] 报单插入失败" << std::endl;
+        if (pRspInfo) {
+            std::cout << "  ErrorID: " << pRspInfo->ErrorID << std::endl;
+            std::cout << "  ErrorMsg: " << (pRspInfo->ErrorMsg[0] ? pRspInfo->ErrorMsg : "无") << std::endl;
+        }
+    }
+
+    /// 报单通知
+    virtual void OnRtnOrder(CThostFtdcOrderField *pOrder) override {
+        if (pOrder) {
+            std::cout << "[报单通知] 合约: " << pOrder->InstrumentID
+                      << ", 报单引用: " << pOrder->OrderRef
+                      << ", 状态: " << pOrder->OrderStatus
+                      << ", 已成交/总委托: " << pOrder->VolumeTraded << "/" << pOrder->VolumeTotalOriginal << std::endl;
+        }
+    }
+
+    /// 成交通知
+    virtual void OnRtnTrade(CThostFtdcTradeField *pTrade) override {
+        if (pTrade) {
+            std::cout << "[成交] 合约: " << pTrade->InstrumentID
+                      << ", 报单引用: " << pTrade->OrderRef
+                      << ", 方向: " << (pTrade->Direction == THOST_FTDC_D_Buy ? "买入" : "卖出")
+                      << ", 价格: " << pTrade->Price
+                      << ", 数量: " << pTrade->Volume << std::endl;
         }
     }
 
@@ -376,6 +506,20 @@ public:
         }
     }
 
+    /// 查询深度行情
+    void ReqQryDepthMarketData(const char* instrumentId) {
+        CThostFtdcQryDepthMarketDataField req = {0};
+
+        strncpy(req.InstrumentID, instrumentId, sizeof(req.InstrumentID) - 1);
+
+        int result = m_api->ReqQryDepthMarketData(&req, ++m_requestId);
+        if (result == 0) {
+            std::cout << "[请求] 发送查询行情请求, RequestID: " << m_requestId << std::endl;
+        } else {
+            std::cout << "[错误] 发送查询行情请求失败, 返回码: " << result << std::endl;
+        }
+    }
+
     /// 请求登出
     void ReqUserLogout() {
         CThostFtdcUserLogoutField req = {0};
@@ -392,6 +536,71 @@ public:
         }
     }
 
+    /// 报单插入（限价单）
+    void ReqOrderInsert(const char* instrumentId, char direction, char offsetFlag, int volume, double price) {
+        CThostFtdcInputOrderField req = {0};
+
+        strncpy(req.BrokerID, m_brokerId.c_str(), sizeof(req.BrokerID) - 1);
+        strncpy(req.InvestorID, m_investorId.c_str(), sizeof(req.InvestorID) - 1);
+        strncpy(req.InstrumentID, instrumentId, sizeof(req.InstrumentID) - 1);
+
+        // 订单引用
+        snprintf(req.OrderRef, sizeof(req.OrderRef), "%d", ++m_requestId);
+
+        // 用户ID
+        strncpy(req.UserID, m_userId.c_str(), sizeof(req.UserID) - 1);
+
+        // 报单价格类型: 限价
+        req.OrderPriceType = THOST_FTDC_OPT_LimitPrice;
+
+        // 买卖方向
+        req.Direction = direction;
+
+        // 组合开平标志: 开仓/平仓
+        req.CombOffsetFlag[0] = offsetFlag;
+
+        // 组合投机套保标志: 投机
+        req.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation;
+
+        // 价格
+        req.LimitPrice = price;
+
+        // 数量
+        req.VolumeTotalOriginal = volume;
+
+        // 有效期类型: 当日有效
+        req.TimeCondition = THOST_FTDC_TC_GFD;
+
+        // 成交量类型: 任何数量
+        req.VolumeCondition = THOST_FTDC_VC_AV;
+
+        // 最小成交量: 1
+        req.MinVolume = 1;
+
+        // 触发条件: 立即
+        req.ContingentCondition = THOST_FTDC_CC_Immediately;
+
+        // 强平原因: 非强平
+        req.ForceCloseReason = THOST_FTDC_FCC_NotForceClose;
+
+        // 自动挂起标志: 否
+        req.IsAutoSuspend = 0;
+
+        // 用户强平标志: 否
+        req.UserForceClose = 0;
+
+        int result = m_api->ReqOrderInsert(&req, m_requestId);
+        if (result == 0) {
+            std::cout << "[请求] 发送报单请求, 合约: " << instrumentId
+                      << ", 方向: " << (direction == THOST_FTDC_D_Buy ? "买入" : "卖出")
+                      << ", 开平: " << (offsetFlag == THOST_FTDC_OF_Open ? "开仓" : "平仓")
+                      << ", 价格: " << req.LimitPrice
+                      << ", 数量: " << volume << std::endl;
+        } else {
+            std::cout << "[错误] 发送报单请求失败, 返回码: " << result << std::endl;
+        }
+    }
+
 private:
     CThostFtdcTraderApi* m_api;
     int m_requestId;
@@ -402,6 +611,14 @@ private:
     std::string m_investorId;
     std::string m_appId;
     std::string m_authCode;
+
+    // au2604 持仓信息
+    int m_au2604YdPosition = 0;     // 昨仓数量
+    int m_au2604TodayPosition = 0;  // 今仓数量
+    char m_au2604Direction = 0;     // 持仓方向 (THOST_FTDC_PD_Long/THOST_FTDC_PD_Short)
+    double m_au2604SettlementPrice = 0;  // 结算价
+    double m_au2604UpperLimit = 0;  // 涨停价
+    double m_au2604LowerLimit = 0;  // 跌停价
 };
 
 ///
